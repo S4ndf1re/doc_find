@@ -25,3 +25,11 @@ impl WordFilter for SimpleWordFilter {
         !self.forbidden_words.contains(input)
     }
 }
+
+pub struct EmptyWordFilter {}
+
+impl WordFilter for EmptyWordFilter {
+    fn filter(&self, input: &str) -> bool {
+        true
+    }
+}

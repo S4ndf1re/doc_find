@@ -9,3 +9,6 @@ pub use tokenizer::*;
 
 pub mod filter;
 pub use filter::*;
+
+#[cfg(test)]
+pub mod test;

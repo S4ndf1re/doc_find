@@ -8,6 +8,13 @@ pub trait IntoDocumentString {
     fn into_document_string(self) -> String;
 }
 
+impl IntoDocumentString for String {
+    fn into_document_string(self) -> String {
+        self
+    }
+}
+
+
 #[derive(Debug, Clone)]
 pub struct Document<I> {
     pub id: Rc<I>,

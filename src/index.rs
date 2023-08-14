@@ -1,6 +1,9 @@
-use crate::Document;
+use crate::{Document, TokenizerStrategie, WordFilter};
 use std::rc::Rc;
-use std::{collections::{HashMap, HashSet}, hash::Hash};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
 pub struct Index<I>
 where
@@ -31,8 +34,7 @@ where
             } else {
                 let mut set = HashSet::new();
                 set.insert(id.clone());
-                self.reverse_index
-                    .insert(word.to_string(), set);
+                self.reverse_index.insert(word.to_string(), set);
             }
         }
 
@@ -66,7 +68,40 @@ where
         f64::log10(n / j)
     }
 
-    /// Calculate tf_idf of all documents that contain the term `term` 
+    // calculate tf_idf for all documents. 
+    // this can take a query string, that can contain multiple tokens (using the same tokenizer as
+    // the documents
+    pub fn tf_idf_all<'a, T, F>(
+        &'a self,
+        query: &str,
+        tokenizer: &T,
+        filter: &F,
+    ) -> HashMap<Rc<I>, (f64, &'a Document<I>)>
+    where
+        T: TokenizerStrategie,
+        F: WordFilter,
+    {
+        let mut result = HashMap::new();
+        let tokens: Vec<String> = tokenizer
+            .tokenize(query)
+            .into_iter()
+            .filter(|f| filter.filter(f))
+            .collect();
+
+        for token in &tokens {
+            let documents = self.tf_idf(token);
+
+            for (score, doc) in documents {
+                let id = doc.get_id();
+                let entry = result.entry(id).or_insert((0.0, doc));
+                entry.0 += score;
+            }
+        }
+
+        result
+    }
+
+    /// Calculate tf_idf of all documents that contain the term `term`
     pub fn tf_idf<'a>(&'a self, term: &str) -> Vec<(f64, &'a Document<I>)> {
         let mut result = vec![];
         let idf = self.idf(term);

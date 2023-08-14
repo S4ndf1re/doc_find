@@ -12,7 +12,7 @@ impl SimpleTokenizer {
 impl TokenizerStrategie for SimpleTokenizer {
     fn tokenize(&self, input: &str) -> Vec<String> {
         input
-            .split(|c: char| !c.is_alphanumeric())
+            .split(|c: char| c.is_whitespace())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_lowercase())
             .collect()
