@@ -1,4 +1,5 @@
 use crate::{Document, TokenizerStrategie, WordFilter};
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::{
     collections::{HashMap, HashSet},
@@ -11,22 +12,29 @@ where
 {
     documents: HashMap<Rc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Rc<I>>>,
+    tokenizer: tokenizers::Tokenizer,
+    model : ort::Session,
+
 }
 
 impl<I> Index<I>
 where
     I: Hash + Eq + Clone,
 {
-    pub fn new() -> Self {
+    pub fn new(embed_tokenizer: tokenizers::Tokenizer, model: ort::Session) -> Self {
         Index {
             documents: HashMap::new(),
             reverse_index: HashMap::new(),
+            tokenizer: embed_tokenizer,
+            model,
         }
     }
 
-    pub fn insert_document(&mut self, doc: Document<I>) {
+    pub fn insert_document<T>(&mut self, doc: Document<I>, tokenizer: &T) 
+    where T: TokenizerStrategie {
         let id = doc.id.clone();
         let words = doc.get_words_ref();
+        let _embeddings = doc.sentences_to_vec(tokenizer, &self.model, &self.tokenizer);
 
         for (word, _) in words {
             if self.reverse_index.contains_key(word) {
@@ -82,7 +90,7 @@ where
         F: WordFilter,
     {
         let mut result = HashMap::new();
-        let tokens: Vec<String> = tokenizer
+        let tokens: Vec<Cow<'_, str>> = tokenizer
             .tokenize(query)
             .into_iter()
             .filter(|f| filter.filter(f))

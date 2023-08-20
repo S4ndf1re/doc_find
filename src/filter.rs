@@ -29,7 +29,7 @@ impl WordFilter for SimpleWordFilter {
 pub struct EmptyWordFilter {}
 
 impl WordFilter for EmptyWordFilter {
-    fn filter(&self, input: &str) -> bool {
+    fn filter(&self, _input: &str) -> bool {
         true
     }
 }

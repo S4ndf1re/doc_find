@@ -1,6 +1,13 @@
-use std::rc::Rc;
+use ndarray::Array;
+use ndarray::Array1;
+use ndarray::Axis;
+use ndarray::CowArray;
+use ort::Value;
+use ort::tensor::OrtOwnedTensor;
+
 use crate::TokenizerStrategie;
 use crate::WordFilter;
+use std::rc::Rc;
 
 use std::collections::HashMap;
 
@@ -14,12 +21,12 @@ impl IntoDocumentString for String {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Document<I> {
     pub id: Rc<I>,
     pub words: HashMap<String, u64>,
     pub total_words: u64,
+    pub data: String,
 }
 
 impl<I> Document<I> {
@@ -29,22 +36,23 @@ impl<I> Document<I> {
         T: TokenizerStrategie,
         F: WordFilter,
     {
-        let (words, total) = Self::count_words(data, filter, tokenizer);
+        let data_str = data.into_document_string();
+        let (words, total) = Self::count_words(&data_str, filter, tokenizer);
         Document {
             id: Rc::new(id),
             words,
             total_words: total,
+            data: data_str,
         }
     }
 
-    fn count_words<D, T, F>(document: D, filter: &F, tokenizer: &T) -> (HashMap<String, u64>, u64)
+    fn count_words<T, F>(document: &str, filter: &F, tokenizer: &T) -> (HashMap<String, u64>, u64)
     where
-        D: IntoDocumentString,
         T: TokenizerStrategie,
         F: WordFilter,
     {
         let mut word_count = HashMap::new();
-        let content = document.into_document_string();
+        let content = document;
         let words: Vec<&str> = content
             .split_whitespace()
             .filter(|c| filter.filter(c))
@@ -87,5 +95,38 @@ impl<I> Document<I> {
         };
 
         f64::log2(1.0 + freq) / f64::log2(lj)
+    }
+
+    pub fn sentences_to_vec<T>(
+        &self,
+        data_tokenizer: &T,
+        model: &ort::Session,
+        tokenizer: &tokenizers::Tokenizer,
+    ) -> Result<Vec<Vec<f32>>, tokenizers::Error>
+    where
+        T: TokenizerStrategie,
+    {
+        let mut result = vec![];
+        let sentences = data_tokenizer.sentences(&self.data);
+        for sentence in &sentences {
+            let tokens = tokenizer.encode(sentence.as_ref(), false)?;
+            let ids = tokens.get_ids();
+            let shape = (1, ids.len());
+            let ids = CowArray::from(Array1::from_iter(ids.into_iter().map(|s| *s as i64)).into_dyn());
+            // let attentions = CowArray::from(Array::from_elem(shape, 1_i64).into_dyn());
+            let type_ids = CowArray::from(Array::from_elem(shape, 0_i64).into_dyn());
+
+            let embedding_result = model.run(vec![
+                Value::from_array(model.allocator(), &ids)?,
+                // Value::from_array(model.allocator(), &attentions)?,
+                Value::from_array(model.allocator(), &type_ids)?,
+            ])?;
+            let output: OrtOwnedTensor<f32, _> = embedding_result[0].try_extract()?;
+            let pooled = output.view().mean_axis(Axis(1)).ok_or(tokenizers::Error::from("pooling failed"))?;
+            let embedding = pooled.as_slice().ok_or(tokenizers::Error::from("can't retreive pooling as slice"))?.to_vec();
+            result.push(embedding);
+        }
+
+        Ok(result)
     }
 }
