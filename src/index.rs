@@ -1,5 +1,13 @@
-use crate::{Document, TokenizerStrategie, WordFilter};
+use qdrant_client::prelude::{Payload, QdrantClient};
+use qdrant_client::qdrant::{PointStruct, SearchPoints};
+use serde::de::DeserializeOwned;
+use uuid::Uuid;
+
+use crate::{util, Document, QueryTokenizer, TokenizerStrategie, WordFilter};
+use serde::Serialize;
+use serde_json::json;
 use std::borrow::Cow;
+use std::error::Error;
 use std::rc::Rc;
 use std::{
     collections::{HashMap, HashSet},
@@ -13,28 +21,57 @@ where
     documents: HashMap<Rc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Rc<I>>>,
     tokenizer: tokenizers::Tokenizer,
-    model : ort::Session,
-
+    model: ort::Session,
+    vec_db: QdrantClient,
+    collection_name: String,
 }
 
 impl<I> Index<I>
 where
-    I: Hash + Eq + Clone,
+    I: Hash + Eq + Clone + Serialize + DeserializeOwned,
 {
-    pub fn new(embed_tokenizer: tokenizers::Tokenizer, model: ort::Session) -> Self {
+    pub fn new(
+        embed_tokenizer: tokenizers::Tokenizer,
+        model: ort::Session,
+        client: QdrantClient,
+        collection_name: String,
+    ) -> Self {
         Index {
             documents: HashMap::new(),
             reverse_index: HashMap::new(),
             tokenizer: embed_tokenizer,
             model,
+            vec_db: client,
+            collection_name,
         }
     }
 
-    pub fn insert_document<T>(&mut self, doc: Document<I>, tokenizer: &T) 
-    where T: TokenizerStrategie {
+    pub async fn insert_document<T>(
+        &mut self,
+        doc: Document<I>,
+        tokenizer: &T,
+    ) -> Result<(), Box<dyn Error + Send + Sync>>
+    where
+        T: TokenizerStrategie,
+    {
         let id = doc.id.clone();
         let words = doc.get_words_ref();
-        let _embeddings = doc.sentences_to_vec(tokenizer, &self.model, &self.tokenizer);
+        let embeddings = doc.get_embedding(tokenizer, &self.model, &self.tokenizer)?;
+
+        let payload: Payload = json!( {
+            "id": *id
+        })
+        .try_into()
+        .unwrap(); // TODO: change this to ? instead of unwrap
+
+        let points = embeddings
+            .into_iter()
+            .map(|e| PointStruct::new(Uuid::new_v4().to_string(), e, payload.clone()))
+            .collect();
+
+        self.vec_db
+            .upsert_points(&self.collection_name, points, None)
+            .await?;
 
         for (word, _) in words {
             if self.reverse_index.contains_key(word) {
@@ -47,10 +84,12 @@ where
         }
 
         self.documents.insert(id.clone(), doc);
+        Ok(())
     }
 
     pub fn remove_document(&mut self, id: &I) -> Option<Document<I>> {
         let document = self.documents.remove(id);
+        // TODO: find a way to delete vectors by payloads
         match document {
             Some(doc) => {
                 for (_, list) in &mut self.reverse_index {
@@ -76,7 +115,7 @@ where
         f64::log10(n / j)
     }
 
-    // calculate tf_idf for all documents. 
+    // calculate tf_idf for all documents.
     // this can take a query string, that can contain multiple tokens (using the same tokenizer as
     // the documents
     pub fn tf_idf_all<'a, T, F>(
@@ -129,5 +168,40 @@ where
             }
         }
         result
+    }
+
+    pub async fn query_embedding<'a, T>(
+        &'a self,
+        query: &str,
+        tokenizer: &T,
+    ) -> Result<Vec<(f64, &'a Document<I>)>, Box<dyn Error + Send + Sync>>
+    where
+        T: TokenizerStrategie,
+    {
+        let query_tokenizier = QueryTokenizer::new(tokenizer);
+        let mut embeddings =
+            util::get_embedding(query, &query_tokenizier, &self.model, &self.tokenizer)?;
+        let embedding = embeddings.remove(0);
+
+        let result = self
+            .vec_db
+            .search_points(&SearchPoints {
+                collection_name: self.collection_name.clone(),
+                limit: 10,
+                with_payload: Some(true.into()),
+                vector: embedding,
+                ..Default::default()
+            })
+            .await?;
+
+        let mut similiar_entries = vec![];
+        for r in result.result {
+            let payload_id: I =
+                serde_json::from_value(r.payload["id"].clone().into_json()).unwrap();
+            let score = r.score as f64;
+            similiar_entries.push((score, self.documents.get(&payload_id).unwrap()))
+        }
+
+        Ok(similiar_entries)
     }
 }
