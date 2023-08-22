@@ -1,5 +1,7 @@
+use anyhow::{anyhow, Error};
 use qdrant_client::prelude::{Payload, QdrantClient};
 use qdrant_client::qdrant::{PointStruct, SearchPoints};
+use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
@@ -46,11 +48,7 @@ where
         }
     }
 
-    pub async fn insert_document<T>(
-        &mut self,
-        doc: Document<I>,
-        tokenizer: &T,
-    ) -> Result<(), Box<dyn Error + Send + Sync>>
+    pub async fn insert_document<T>(&mut self, doc: Document<I>, tokenizer: &T) -> Result<(), Error>
     where
         T: TokenizerStrategie,
     {
@@ -61,8 +59,7 @@ where
         let payload: Payload = json!( {
             "id": *id
         })
-        .try_into()
-        .unwrap(); // TODO: change this to ? instead of unwrap
+        .try_into().map_err(|e: PayloadConversionError | anyhow!(e))?;
 
         let points = embeddings
             .into_iter()
@@ -75,7 +72,10 @@ where
 
         for (word, _) in words {
             if self.reverse_index.contains_key(word) {
-                self.reverse_index.get_mut(word).unwrap().insert(id.clone());
+                self.reverse_index
+                    .get_mut(word)
+                    .expect("previous check for existance failed")
+                    .insert(id.clone());
             } else {
                 let mut set = HashSet::new();
                 set.insert(id.clone());
@@ -162,7 +162,7 @@ where
         for doc_id in relevant_docs {
             let doc = self.documents.get(doc_id);
             if doc.is_some() {
-                let doc = doc.unwrap();
+                let doc = doc.expect("previous check for existance failed");
                 let doc_tf_idf = idf * doc.tf(term);
                 result.push((doc_tf_idf, doc));
             }
@@ -174,7 +174,7 @@ where
         &'a self,
         query: &str,
         tokenizer: &T,
-    ) -> Result<Vec<(f64, &'a Document<I>)>, Box<dyn Error + Send + Sync>>
+    ) -> Result<Vec<(f64, &'a Document<I>)>, Error>
     where
         T: TokenizerStrategie,
     {
@@ -196,10 +196,12 @@ where
 
         let mut similiar_entries = vec![];
         for r in result.result {
-            let payload_id: I =
-                serde_json::from_value(r.payload["id"].clone().into_json()).unwrap();
+            let payload_id: I = serde_json::from_value(r.payload["id"].clone().into_json())?;
             let score = r.score as f64;
-            similiar_entries.push((score, self.documents.get(&payload_id).unwrap()))
+            match self.documents.get(&payload_id) {
+                Some(doc) => similiar_entries.push((score, doc)),
+                None => (),
+            };
         }
 
         Ok(similiar_entries)

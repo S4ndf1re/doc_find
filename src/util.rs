@@ -1,3 +1,4 @@
+use anyhow::{Error, anyhow};
 use ndarray::{CowArray, Array, Axis};
 use ort::{Value, tensor::OrtOwnedTensor};
 
@@ -8,14 +9,14 @@ use crate::TokenizerStrategie;
         data_tokenizer: &T,
         model: &ort::Session,
         tokenizer: &tokenizers::Tokenizer,
-    ) -> Result<Vec<Vec<f32>>, tokenizers::Error>
+    ) -> Result<Vec<Vec<f32>>, Error>
     where
         T: TokenizerStrategie,
     {
         let mut result = vec![];
         let sentences = data_tokenizer.sentences(&data);
         for sentence in &sentences {
-            let tokens = tokenizer.encode(sentence.as_ref(), false)?;
+            let tokens = tokenizer.encode(sentence.as_ref(), false).map_err(|e| anyhow!(e))?;
             let ids = tokens.get_ids();
             let shape = (1, ids.len());
             let mut temp = Array::from_elem(shape, 0_i64);
@@ -37,10 +38,10 @@ use crate::TokenizerStrategie;
             let pooled = output
                 .view()
                 .mean_axis(Axis(1))
-                .ok_or(tokenizers::Error::from("pooling failed"))?;
+                .ok_or(Error::msg("pooling failed"))?;
             let embedding = pooled
                 .as_slice()
-                .ok_or(tokenizers::Error::from("can't retreive pooling as slice"))?
+                .ok_or(Error::msg("can't retreive pooling as slice"))?
                 .to_vec();
             result.push(embedding);
         }

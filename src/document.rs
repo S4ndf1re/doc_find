@@ -1,3 +1,5 @@
+use anyhow::Error;
+
 use crate::TokenizerStrategie;
 use crate::WordFilter;
 use crate::util;
@@ -96,7 +98,7 @@ impl<I> Document<I> {
         data_tokenizer: &T,
         model: &ort::Session,
         tokenizer: &tokenizers::Tokenizer,
-    ) -> Result<Vec<Vec<f32>>, tokenizers::Error>
+    ) -> Result<Vec<Vec<f32>>, Error>
     where
         T: TokenizerStrategie,
     {
