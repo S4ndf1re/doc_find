@@ -22,7 +22,7 @@ impl TokenizerStrategie for SimpleTokenizer {
     }
 
     fn sentences<'a>(&self, input: &'a str) -> Vec<Cow<'a, str>> {
-        input.split(".").map(|s| s.into()).collect()
+        input.split(".\n").map(|s| s.into()).collect()
     }
 }
 

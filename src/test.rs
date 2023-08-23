@@ -1,7 +1,47 @@
+use std::fmt::Display;
+
 use qdrant_client::{
     prelude::QdrantClient,
-    qdrant::{vectors_config::Config, CreateCollection, Distance, VectorParams, VectorsConfig},
+    qdrant::{
+        r#match::MatchValue, vectors_config::Config, CreateCollection, Distance, VectorParams,
+        VectorsConfig,
+    },
 };
+use serde::{Deserialize, Serialize};
+
+#[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct I64(i64);
+
+impl Into<tikv_client::Key> for I64 {
+    fn into(self) -> tikv_client::Key {
+        serde_json::to_vec(&self.0).unwrap().into()
+    }
+}
+
+impl From<tikv_client::Key> for I64 {
+    fn from(value: tikv_client::Key) -> Self {
+        let v: Vec<u8> = value.into();
+        Self(serde_json::from_slice(&v).unwrap())
+    }
+}
+
+impl Into<tikv_client::Value> for I64 {
+    fn into(self) -> tikv_client::Value {
+        serde_json::to_vec(&self.0).unwrap().into()
+    }
+}
+
+impl Into<MatchValue> for I64 {
+    fn into(self) -> MatchValue {
+        MatchValue::Integer(self.0)
+    }
+}
+
+impl Display for I64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[test]
 fn store_and_find() {
@@ -48,23 +88,23 @@ fn store_and_find() {
         }))
         .unwrap();
 
-    let mut index = Index::<i64>::new(onnx_tokenizer, model, client, collection_name);
+    let mut index = Index::<I64>::new(onnx_tokenizer, model, client, collection_name);
     let tokenizer = SimpleTokenizer::new();
     let filter = EmptyWordFilter {};
 
     let document1 = Document::new(
-        1,
+        I64(1),
         "a quick brown fox lazily shakes a banana tree".to_string(),
         &filter,
         &tokenizer,
     );
     let document2 = Document::new(
-        2,
+        I64(2),
         "a quick brown fox pulls a gun fast".to_string(),
         &filter,
         &tokenizer,
     );
-    let document3 = Document::new(3, "test me fast".to_string(), &filter, &tokenizer);
+    let document3 = Document::new(I64(3), "test me fast".to_string(), &filter, &tokenizer);
 
     runtime.block_on(async {
         index.insert_document(document1, &tokenizer).await.unwrap();
@@ -74,13 +114,13 @@ fn store_and_find() {
 
     let result = index.tf_idf_all("brown fox", &tokenizer, &filter);
     assert!(result.len() == 2);
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &1));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
-    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &3));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
 
     let result = index.tf_idf_all("fast", &tokenizer, &filter);
     assert!(result.len() == 2);
-    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &1));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &3));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
 }

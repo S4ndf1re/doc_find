@@ -1,8 +1,10 @@
 use anyhow::Error;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
+use crate::util;
 use crate::TokenizerStrategie;
 use crate::WordFilter;
-use crate::util;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,7 +19,7 @@ impl IntoDocumentString for String {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Document<I> {
     pub id: Arc<I>,
     pub words: HashMap<String, u64>,
@@ -103,5 +105,28 @@ impl<I> Document<I> {
         T: TokenizerStrategie,
     {
         util::get_embedding(&self.data, data_tokenizer, model, tokenizer)
+    }
+}
+
+impl<I> Into<tikv_client::Value> for Document<I>
+where
+    I: Serialize,
+{
+    fn into(self) -> tikv_client::Value {
+        match serde_json::to_vec(&self) {
+            Ok(buffer) => buffer,
+            Err(_) => vec![],
+        }
+    }
+}
+
+impl<I> From<tikv_client::Value> for Document<I> 
+where I: DeserializeOwned + Default
+{
+    fn from(value: tikv_client::Value) -> Self {
+        match serde_json::from_slice(&value)  {
+            Ok(val) => val,
+            Err(_) => Default::default()
+        }
     }
 }

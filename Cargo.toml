@@ -10,8 +10,9 @@ anyhow = "1.0.75"
 ndarray = "0.15.6"
 ort = { version = "1.15.2", features = ["cuda"] }
 qdrant-client = "1.4.0"
-serde = { version = "1.0.174", features = ["serde_derive", "derive"] }
+serde = { version = "1.0.174", features = ["serde_derive", "derive", "rc"] }
 serde_json = "1.0.105"
+tikv-client = "0.2.0"
 tokenizers = "0.13.4"
 tokio = { version = "1.32.0", features = ["rt"] }
 uuid = { version = "1.4.1", features = ["v4"] }

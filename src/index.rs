@@ -8,22 +8,41 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
+use tokio::fs::OpenOptions;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::{util, Document, QueryTokenizer, TokenizerStrategie, WordFilter};
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use std::borrow::Cow;
 use std::fmt::Display;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
 };
 
+const _DOCUMENTS_PREFIX: &str = "~DOCS:";
+const _REVERSE_INDEX_PREFIX: &str = "~REV_IDX:";
+
+#[derive(Serialize)]
+struct DataIndexStore<'a, I> {
+    documents: Vec<(&'a Arc<I>, &'a Document<I>)>,
+    reverse_index: Vec<(&'a String, Vec<Arc<I>>)>,
+}
+
+#[derive(Deserialize)]
+struct DataIndexRead<I> {
+    documents: Vec<(I, Document<I>)>,
+    reverse_index: Vec<(String, Vec<I>)>,
+}
+
 pub struct Index<I>
 where
-    I: Hash + Eq + Clone,
+    I: Hash + Eq,
 {
     documents: HashMap<Arc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Arc<I>>>,
@@ -47,10 +66,75 @@ where
             documents: HashMap::new(),
             reverse_index: HashMap::new(),
             tokenizer: embed_tokenizer,
+            vec_db: client,
+            collection_name,
+            model,
+        }
+    }
+
+    /// This function stores the entire `Index<I>` into a file specified by `path` in json format
+    pub async fn store(&self, path: PathBuf) -> Result<(), Error> {
+        let mut file_options = OpenOptions::new();
+        file_options.create(true).write(true).truncate(true);
+        let mut file = file_options.open(path).await?;
+
+        let data = DataIndexStore {
+            documents: self.documents.iter().map(|k| k).collect(),
+            reverse_index: self
+                .reverse_index
+                .iter()
+                .map(|(k, v)| (k, v.clone().into_iter().map(|v| v).collect()))
+                .collect(),
+        };
+
+        let buffer = serde_json::to_vec(&data)?;
+        file.write(&buffer).await?;
+
+        todo!()
+    }
+
+    pub async fn load(
+        path: PathBuf,
+        embed_tokenizer: tokenizers::Tokenizer,
+        model: ort::Session,
+        client: QdrantClient,
+        collection_name: String,
+    ) -> Result<Self, Error> {
+        let mut file_options = OpenOptions::new();
+        let mut file = file_options
+            .read(true)
+            .write(false)
+            .truncate(false)
+            .create(false)
+            .open(path)
+            .await?;
+
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer).await?;
+        let data: DataIndexRead<I> = serde_json::from_slice(&buffer)?;
+
+        let mut documents = HashMap::new();
+        data.documents.into_iter().for_each(|(k, v)| {
+            documents.insert(Arc::new(k), v);
+        });
+
+        let mut reverse_index = HashMap::new();
+        data.reverse_index.into_iter().for_each(|(k, v)| {
+            let mut set = HashSet::new();
+            v.into_iter().for_each(|v| {
+                set.insert(Arc::new(v));
+            });
+            reverse_index.insert(k, set);
+        });
+
+        Ok(Self {
+            documents,
+            reverse_index,
+            tokenizer: embed_tokenizer,
             model,
             vec_db: client,
             collection_name,
-        }
+        })
     }
 
     pub async fn insert_document<T>(&mut self, doc: Document<I>, tokenizer: &T) -> Result<(), Error>
@@ -110,7 +194,8 @@ where
             ]))),
         };
         self.vec_db
-            .delete_points(self.collection_name.clone(), &point_selector, None).await?;
+            .delete_points(self.collection_name.clone(), &point_selector, None)
+            .await?;
 
         match document {
             Some(doc) => {
