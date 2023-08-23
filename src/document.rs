@@ -3,7 +3,6 @@ use anyhow::Error;
 use crate::TokenizerStrategie;
 use crate::WordFilter;
 use crate::util;
-use std::rc::Rc;
 
 use std::collections::HashMap;
 use std::sync::Arc;

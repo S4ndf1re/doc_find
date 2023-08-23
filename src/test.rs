@@ -74,13 +74,13 @@ fn store_and_find() {
 
     let result = index.tf_idf_all("brown fox", &tokenizer, &filter);
     assert!(result.len() == 2);
-    assert!(result.contains_key(&1));
-    assert!(result.contains_key(&2));
-    assert!(!result.contains_key(&3));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &1));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &3));
 
     let result = index.tf_idf_all("fast", &tokenizer, &filter);
     assert!(result.len() == 2);
-    assert!(!result.contains_key(&1));
-    assert!(result.contains_key(&2));
-    assert!(result.contains_key(&3));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &1));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &3));
 }
