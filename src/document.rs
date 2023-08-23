@@ -6,6 +6,7 @@ use crate::util;
 use std::rc::Rc;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub trait IntoDocumentString {
     fn into_document_string(self) -> String;
@@ -19,7 +20,7 @@ impl IntoDocumentString for String {
 
 #[derive(Debug, Clone)]
 pub struct Document<I> {
-    pub id: Rc<I>,
+    pub id: Arc<I>,
     pub words: HashMap<String, u64>,
     pub total_words: u64,
     pub data: String,
@@ -35,7 +36,7 @@ impl<I> Document<I> {
         let data_str = data.into_document_string();
         let (words, total) = Self::count_words(&data_str, filter, tokenizer);
         Document {
-            id: Rc::new(id),
+            id: Arc::new(id),
             words,
             total_words: total,
             data: data_str,
@@ -64,8 +65,8 @@ impl<I> Document<I> {
         (word_count, total)
     }
 
-    pub fn get_id(&self) -> Rc<I> {
-        Rc::clone(&self.id)
+    pub fn get_id(&self) -> Arc<I> {
+        Arc::clone(&self.id)
     }
 
     pub fn get_words_ref(&self) -> &HashMap<String, u64> {

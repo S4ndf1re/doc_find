@@ -1,6 +1,11 @@
 use anyhow::{anyhow, Error};
 use qdrant_client::prelude::{Payload, QdrantClient};
-use qdrant_client::qdrant::{PointStruct, SearchPoints};
+use qdrant_client::qdrant::condition::ConditionOneOf;
+use qdrant_client::qdrant::points_selector::PointsSelectorOneOf;
+use qdrant_client::qdrant::r#match::MatchValue;
+use qdrant_client::qdrant::{
+    Condition, FieldCondition, Filter, Match, PointStruct, PointsSelector, SearchPoints,
+};
 use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -9,8 +14,8 @@ use crate::{util, Document, QueryTokenizer, TokenizerStrategie, WordFilter};
 use serde::Serialize;
 use serde_json::json;
 use std::borrow::Cow;
-use std::error::Error;
-use std::rc::Rc;
+use std::fmt::Display;
+use std::sync::Arc;
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
@@ -20,8 +25,8 @@ pub struct Index<I>
 where
     I: Hash + Eq + Clone,
 {
-    documents: HashMap<Rc<I>, Document<I>>,
-    reverse_index: HashMap<String, HashSet<Rc<I>>>,
+    documents: HashMap<Arc<I>, Document<I>>,
+    reverse_index: HashMap<String, HashSet<Arc<I>>>,
     tokenizer: tokenizers::Tokenizer,
     model: ort::Session,
     vec_db: QdrantClient,
@@ -30,7 +35,7 @@ where
 
 impl<I> Index<I>
 where
-    I: Hash + Eq + Clone + Serialize + DeserializeOwned,
+    I: Hash + Eq + Clone + Serialize + DeserializeOwned + Into<MatchValue> + Display,
 {
     pub fn new(
         embed_tokenizer: tokenizers::Tokenizer,
@@ -52,14 +57,15 @@ where
     where
         T: TokenizerStrategie,
     {
-        let id = doc.id.clone();
+        let id = doc.get_id();
         let words = doc.get_words_ref();
         let embeddings = doc.get_embedding(tokenizer, &self.model, &self.tokenizer)?;
 
         let payload: Payload = json!( {
             "id": *id
         })
-        .try_into().map_err(|e: PayloadConversionError | anyhow!(e))?;
+        .try_into()
+        .map_err(|e: PayloadConversionError| anyhow!(e))?;
 
         let points = embeddings
             .into_iter()
@@ -87,18 +93,34 @@ where
         Ok(())
     }
 
-    pub fn remove_document(&mut self, id: &I) -> Option<Document<I>> {
-        let document = self.documents.remove(id);
-        // TODO: find a way to delete vectors by payloads
+    pub async fn remove_document(&mut self, id: Arc<I>) -> Result<Document<I>, Error> {
+        let document = self.documents.remove(id.as_ref());
+
+        let point_selector = PointsSelector {
+            points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter::must(vec![
+                Condition {
+                    condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
+                        key: "id".to_owned(),
+                        r#match: Some(Match {
+                            match_value: Some(id.as_ref().clone().into()),
+                        }),
+                        ..Default::default()
+                    })),
+                },
+            ]))),
+        };
+        self.vec_db
+            .delete_points(self.collection_name.clone(), &point_selector, None).await?;
+
         match document {
             Some(doc) => {
                 for (_, list) in &mut self.reverse_index {
                     let id = doc.get_id();
                     list.remove(&id);
                 }
-                None
+                Ok(doc)
             }
-            None => None,
+            None => Err(anyhow!("no document found for id {}", id)),
         }
     }
 
@@ -123,7 +145,7 @@ where
         query: &str,
         tokenizer: &T,
         filter: &F,
-    ) -> HashMap<Rc<I>, (f64, &'a Document<I>)>
+    ) -> Vec<(f64, &'a Document<I>)>
     where
         T: TokenizerStrategie,
         F: WordFilter,
@@ -145,7 +167,7 @@ where
             }
         }
 
-        result
+        result.into_iter().map(|(_, v)| v).collect()
     }
 
     /// Calculate tf_idf of all documents that contain the term `term`
