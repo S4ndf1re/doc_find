@@ -1,9 +1,11 @@
 use std::borrow::Cow;
 
+/// Defines a custom Tokenizer Strategie that is used for `Document<I>` token generation
 pub trait TokenizerStrategie {
-    ///
+    /// generate a list of single tokens
     fn tokenize<'a>(&self, input: &'a str) -> Vec<Cow<'a, str>>;
-    fn sentences<'a>(&self, input: &'a str) -> Vec<Cow<'a, str>>;
+    /// generate a list of sentences
+    fn sentences<'a>(&self, input: &'a str) -> Vec<String>;
 }
 
 pub struct SimpleTokenizer;
@@ -21,8 +23,8 @@ impl TokenizerStrategie for SimpleTokenizer {
             .collect()
     }
 
-    fn sentences<'a>(&self, input: &'a str) -> Vec<Cow<'a, str>> {
-        input.split(".\n").map(|s| s.into()).collect()
+    fn sentences<'a>(&self, input: &'a str) -> Vec<String> {
+        input.split(".\n").map(|s| s.to_owned()).collect()
     }
 }
 
@@ -50,7 +52,7 @@ where
         self.normal.tokenize(input)
     }
 
-    fn sentences<'a>(&self, input: &'a str) -> Vec<Cow<'a, str>> {
-        vec![input.into()]
+    fn sentences<'a>(&self, input: &'a str) -> Vec<String> {
+        vec![input.to_owned()]
     }
 }

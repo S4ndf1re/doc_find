@@ -1,6 +1,8 @@
 use std::{collections::HashSet, fs, io, path::PathBuf};
 
+/// Filter definition to filter out useless or bad words
 pub trait WordFilter {
+    /// filter a token
     fn filter(&self, input: &str) -> bool;
 }
 

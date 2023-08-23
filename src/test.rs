@@ -107,9 +107,9 @@ fn store_and_find() {
     let document3 = Document::new(I64(3), "test me fast".to_string(), &filter, &tokenizer);
 
     runtime.block_on(async {
-        index.insert_document(document1, &tokenizer).await.unwrap();
-        index.insert_document(document2, &tokenizer).await.unwrap();
-        index.insert_document(document3, &tokenizer).await.unwrap();
+        index.insert_document(document1).await.unwrap();
+        index.insert_document(document2).await.unwrap();
+        index.insert_document(document3).await.unwrap();
     });
 
     let result = index.tf_idf_all("brown fox", &tokenizer, &filter);

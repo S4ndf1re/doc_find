@@ -56,6 +56,7 @@ impl<I> Index<I>
 where
     I: Hash + Eq + Clone + Serialize + DeserializeOwned + Into<MatchValue> + Display,
 {
+    /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
     pub fn new(
         embed_tokenizer: tokenizers::Tokenizer,
         model: ort::Session,
@@ -93,6 +94,8 @@ where
         todo!()
     }
 
+    /// Load an `Index<I>` using a file located at `path`.
+    /// All other parameters are the same as in `Self::new`
     pub async fn load(
         path: PathBuf,
         embed_tokenizer: tokenizers::Tokenizer,
@@ -137,13 +140,12 @@ where
         })
     }
 
-    pub async fn insert_document<T>(&mut self, doc: Document<I>, tokenizer: &T) -> Result<(), Error>
-    where
-        T: TokenizerStrategie,
-    {
+    /// Insert a single `Document<I>` into the `Index<I>` using a custom Tokenizer.
+    /// The Tokenizer should be the same as used for the `Document<I>`s creation.
+    pub async fn insert_document(&mut self, doc: Document<I>) -> Result<(), Error> {
         let id = doc.get_id();
         let words = doc.get_words_ref();
-        let embeddings = doc.get_embedding(tokenizer, &self.model, &self.tokenizer)?;
+        let embeddings = doc.get_embedding(&self.model, &self.tokenizer)?;
 
         let payload: Payload = json!( {
             "id": *id
@@ -177,6 +179,9 @@ where
         Ok(())
     }
 
+    /// Remove a single `Document<I>` and return it.
+    /// When the document is not found, an error is returned.
+    /// Also, when the request to qdrant failed, an error is returned, too.
     pub async fn remove_document(&mut self, id: Arc<I>) -> Result<Document<I>, Error> {
         let document = self.documents.remove(id.as_ref());
 
@@ -222,9 +227,9 @@ where
         f64::log10(n / j)
     }
 
-    // calculate tf_idf for all documents.
-    // this can take a query string, that can contain multiple tokens (using the same tokenizer as
-    // the documents
+    /// calculate tf_idf for all documents.
+    /// this can take a query string, that can contain multiple tokens (using the same tokenizer as
+    /// the documents
     pub fn tf_idf_all<'a, T, F>(
         &'a self,
         query: &str,
@@ -277,6 +282,10 @@ where
         result
     }
 
+    /// Query `Document<I>`s using the embeddings generated during `Self::insert_document`.
+    /// This will not run `tf_idf` or any other serach.
+    /// At the end, a list of all found `Document<I>`s will get returned, tupled with the vector
+    /// distance to the query.
     pub async fn query_embedding<'a, T>(
         &'a self,
         query: &str,
@@ -286,8 +295,9 @@ where
         T: TokenizerStrategie,
     {
         let query_tokenizier = QueryTokenizer::new(tokenizer);
-        let mut embeddings =
-            util::get_embedding(query, &query_tokenizier, &self.model, &self.tokenizer)?;
+        let sentences = query_tokenizier.sentences(query);
+
+        let mut embeddings = util::get_embedding(&sentences, &self.model, &self.tokenizer)?;
         let embedding = embeddings.remove(0);
 
         let result = self

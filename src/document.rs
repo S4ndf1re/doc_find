@@ -23,6 +23,7 @@ impl IntoDocumentString for String {
 pub struct Document<I> {
     pub id: Arc<I>,
     pub words: HashMap<String, u64>,
+    pub sentences: Vec<String>,
     pub total_words: u64,
     pub data: String,
 }
@@ -36,9 +37,15 @@ impl<I> Document<I> {
     {
         let data_str = data.into_document_string();
         let (words, total) = Self::count_words(&data_str, filter, tokenizer);
+        let sentences = tokenizer
+            .sentences(&data_str)
+            .into_iter()
+            .map(Into::into)
+            .collect();
         Document {
             id: Arc::new(id),
             words,
+            sentences,
             total_words: total,
             data: data_str,
         }
@@ -74,6 +81,10 @@ impl<I> Document<I> {
         &self.words
     }
 
+    pub fn get_sentences_ref(&self) -> &Vec<String> {
+        &self.sentences
+    }
+
     pub fn get_total_count(&self) -> u64 {
         self.total_words
     }
@@ -95,16 +106,12 @@ impl<I> Document<I> {
         f64::log2(1.0 + freq) / f64::log2(lj)
     }
 
-    pub fn get_embedding<T>(
+    pub fn get_embedding(
         &self,
-        data_tokenizer: &T,
         model: &ort::Session,
         tokenizer: &tokenizers::Tokenizer,
-    ) -> Result<Vec<Vec<f32>>, Error>
-    where
-        T: TokenizerStrategie,
-    {
-        util::get_embedding(&self.data, data_tokenizer, model, tokenizer)
+    ) -> Result<Vec<Vec<f32>>, Error> {
+        util::get_embedding(&self.sentences, model, tokenizer)
     }
 }
 
@@ -120,13 +127,14 @@ where
     }
 }
 
-impl<I> From<tikv_client::Value> for Document<I> 
-where I: DeserializeOwned + Default
+impl<I> From<tikv_client::Value> for Document<I>
+where
+    I: DeserializeOwned + Default,
 {
     fn from(value: tikv_client::Value) -> Self {
-        match serde_json::from_slice(&value)  {
+        match serde_json::from_slice(&value) {
             Ok(val) => val,
-            Err(_) => Default::default()
+            Err(_) => Default::default(),
         }
     }
 }
