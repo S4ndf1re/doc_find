@@ -8,220 +8,139 @@ use qdrant_client::qdrant::{
 };
 use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
-use crate::{util, Document, QueryTokenizer, TokenizerStrategie, WordFilter};
+use crate::{util, Document, QueryTokenizer, StorageEngine, TokenizerStrategie, WordFilter};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::{
-    collections::{HashMap, HashSet},
-    hash::Hash,
-};
+use std::{collections::HashMap, hash::Hash};
 
 const _DOCUMENTS_PREFIX: &str = "~DOCS:";
 const _REVERSE_INDEX_PREFIX: &str = "~REV_IDX:";
 
-#[derive(Serialize)]
-struct DataIndexStore<'a, I> {
-    documents: Vec<(&'a Arc<I>, &'a Document<I>)>,
-    reverse_index: Vec<(&'a String, Vec<Arc<I>>)>,
-}
-
-#[derive(Deserialize)]
-struct DataIndexRead<I> {
-    documents: Vec<(I, Document<I>)>,
-    reverse_index: Vec<(String, Vec<I>)>,
-}
-
-pub struct Index<I>
-where
-    I: Hash + Eq,
-{
-    documents: HashMap<Arc<I>, Document<I>>,
-    reverse_index: HashMap<String, HashSet<Arc<I>>>,
-    tokenizer: tokenizers::Tokenizer,
-    model: ort::Session,
-    vec_db: QdrantClient,
+pub struct QdrantOptions {
+    client: QdrantClient,
     collection_name: String,
 }
 
-impl<I> Index<I>
+impl QdrantOptions {
+    pub fn new(client: QdrantClient, collection_name: String) -> Self {
+        Self {
+            client,
+            collection_name,
+        }
+    }
+}
+
+pub struct Index<I, ST, O> {
+    tokenizer: tokenizers::Tokenizer,
+    model: ort::Session,
+    vec_db: Option<QdrantOptions>,
+    storage: ST,
+    _phantom_i: std::marker::PhantomData<I>,
+    _phantom_o: std::marker::PhantomData<O>,
+}
+
+impl<I, ST, O> Index<I, ST, O>
 where
     I: Hash + Eq + Clone + Serialize + DeserializeOwned + Into<MatchValue> + Display,
+    ST: StorageEngine<I, O>,
 {
     /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
     pub fn new(
         embed_tokenizer: tokenizers::Tokenizer,
         model: ort::Session,
-        client: QdrantClient,
-        collection_name: String,
+        client: Option<QdrantOptions>,
+        storage: ST,
     ) -> Self {
         Index {
-            documents: HashMap::new(),
-            reverse_index: HashMap::new(),
             tokenizer: embed_tokenizer,
             vec_db: client,
-            collection_name,
             model,
+            storage,
+            _phantom_i: std::marker::PhantomData,
+            _phantom_o: std::marker::PhantomData,
         }
-    }
-
-    /// This function stores the entire `Index<I>` into a file specified by `path` in json format
-    pub async fn store(&self, path: PathBuf) -> Result<(), Error> {
-        let mut file_options = OpenOptions::new();
-        file_options.create(true).write(true).truncate(true);
-        let mut file = file_options.open(path).await?;
-
-        let data = DataIndexStore {
-            documents: self.documents.iter().map(|k| k).collect(),
-            reverse_index: self
-                .reverse_index
-                .iter()
-                .map(|(k, v)| (k, v.clone().into_iter().map(|v| v).collect()))
-                .collect(),
-        };
-
-        let buffer = serde_json::to_vec(&data)?;
-        file.write(&buffer).await?;
-
-        todo!()
-    }
-
-    /// Load an `Index<I>` using a file located at `path`.
-    /// All other parameters are the same as in `Self::new`
-    pub async fn load(
-        path: PathBuf,
-        embed_tokenizer: tokenizers::Tokenizer,
-        model: ort::Session,
-        client: QdrantClient,
-        collection_name: String,
-    ) -> Result<Self, Error> {
-        let mut file_options = OpenOptions::new();
-        let mut file = file_options
-            .read(true)
-            .write(false)
-            .truncate(false)
-            .create(false)
-            .open(path)
-            .await?;
-
-        let mut buffer = vec![];
-        file.read_to_end(&mut buffer).await?;
-        let data: DataIndexRead<I> = serde_json::from_slice(&buffer)?;
-
-        let mut documents = HashMap::new();
-        data.documents.into_iter().for_each(|(k, v)| {
-            documents.insert(Arc::new(k), v);
-        });
-
-        let mut reverse_index = HashMap::new();
-        data.reverse_index.into_iter().for_each(|(k, v)| {
-            let mut set = HashSet::new();
-            v.into_iter().for_each(|v| {
-                set.insert(Arc::new(v));
-            });
-            reverse_index.insert(k, set);
-        });
-
-        Ok(Self {
-            documents,
-            reverse_index,
-            tokenizer: embed_tokenizer,
-            model,
-            vec_db: client,
-            collection_name,
-        })
     }
 
     /// Insert a single `Document<I>` into the `Index<I>` using a custom Tokenizer.
     /// The Tokenizer should be the same as used for the `Document<I>`s creation.
     pub async fn insert_document(&mut self, doc: Document<I>) -> Result<(), Error> {
         let id = doc.get_id();
-        let words = doc.get_words_ref();
-        let embeddings = doc.get_embedding(&self.model, &self.tokenizer)?;
 
-        let payload: Payload = json!( {
-            "id": *id
-        })
-        .try_into()
-        .map_err(|e: PayloadConversionError| anyhow!(e))?;
+        if self.vec_db.is_some() {
+            let QdrantOptions {
+                client,
+                collection_name,
+            } = self
+                .vec_db
+                .as_ref()
+                .expect("already checked before. This should be Some");
 
-        let points = embeddings
-            .into_iter()
-            .map(|e| PointStruct::new(Uuid::new_v4().to_string(), e, payload.clone()))
-            .collect();
+            let embeddings = doc.get_embedding(&self.model, &self.tokenizer)?;
 
-        self.vec_db
-            .upsert_points(&self.collection_name, points, None)
-            .await?;
+            let payload: Payload = json!( {
+                "id": *id
+            })
+            .try_into()
+            .map_err(|e: PayloadConversionError| anyhow!(e))?;
 
-        for (word, _) in words {
-            if self.reverse_index.contains_key(word) {
-                self.reverse_index
-                    .get_mut(word)
-                    .expect("previous check for existance failed")
-                    .insert(id.clone());
-            } else {
-                let mut set = HashSet::new();
-                set.insert(id.clone());
-                self.reverse_index.insert(word.to_string(), set);
-            }
+            let points = embeddings
+                .into_iter()
+                .map(|e| PointStruct::new(Uuid::new_v4().to_string(), e, payload.clone()))
+                .collect();
+
+            client.upsert_points(collection_name, points, None).await?;
         }
 
-        self.documents.insert(id.clone(), doc);
-        Ok(())
+        self.storage.insert_document(doc).await
     }
 
     /// Remove a single `Document<I>` and return it.
     /// When the document is not found, an error is returned.
     /// Also, when the request to qdrant failed, an error is returned, too.
     pub async fn remove_document(&mut self, id: Arc<I>) -> Result<Document<I>, Error> {
-        let document = self.documents.remove(id.as_ref());
+        if self.vec_db.is_some() {
+            let QdrantOptions {
+                client,
+                collection_name,
+            } = self
+                .vec_db
+                .as_ref()
+                .expect("already checked before. This should be Some");
 
-        let point_selector = PointsSelector {
-            points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter::must(vec![
-                Condition {
-                    condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
-                        key: "id".to_owned(),
-                        r#match: Some(Match {
-                            match_value: Some(id.as_ref().clone().into()),
-                        }),
-                        ..Default::default()
-                    })),
-                },
-            ]))),
-        };
-        self.vec_db
-            .delete_points(self.collection_name.clone(), &point_selector, None)
-            .await?;
-
-        match document {
-            Some(doc) => {
-                for (_, list) in &mut self.reverse_index {
-                    let id = doc.get_id();
-                    list.remove(&id);
-                }
-                Ok(doc)
-            }
-            None => Err(anyhow!("no document found for id {}", id)),
+            let point_selector = PointsSelector {
+                points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter::must(vec![
+                    Condition {
+                        condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
+                            key: "id".to_owned(),
+                            r#match: Some(Match {
+                                match_value: Some(id.as_ref().clone().into()),
+                            }),
+                            ..Default::default()
+                        })),
+                    },
+                ]))),
+            };
+            client
+                .delete_points(collection_name, &point_selector, None)
+                .await?;
         }
+        self.storage.remove_document(id).await
     }
 
     /// calculate the inverse document frequeny idf(t)=log N/J,
     /// where N is the total number of document
     /// and J is the number of documents that contain the term t
-    fn idf(&self, term: &str) -> f64 {
-        let n = self.documents.len() as f64;
-        let j = match self.reverse_index.get(term) {
-            Some(l) => l.len() as f64,
-            None => 0.0,
+    async fn idf(&self, term: &str) -> f64 {
+        let n = self.storage.get_document_len().await as f64;
+        let j = match self.storage.get_reverse_documents(term).await {
+            Ok(l) => l.len() as f64,
+            Err(_) => 0.0,
         };
 
         f64::log10(n / j)
@@ -230,7 +149,7 @@ where
     /// calculate tf_idf for all documents.
     /// this can take a query string, that can contain multiple tokens (using the same tokenizer as
     /// the documents
-    pub fn tf_idf_all<'a, T, F>(
+    pub async fn tf_idf_all<'a, T, F>(
         &'a self,
         query: &str,
         tokenizer: &T,
@@ -248,7 +167,10 @@ where
             .collect();
 
         for token in &tokens {
-            let documents = self.tf_idf(token);
+            let documents = match self.tf_idf(token).await {
+                Ok(docs) => docs,
+                Err(_) => Vec::new(),
+            };
 
             for (score, doc) in documents {
                 let id = doc.get_id();
@@ -261,25 +183,21 @@ where
     }
 
     /// Calculate tf_idf of all documents that contain the term `term`
-    pub fn tf_idf<'a>(&'a self, term: &str) -> Vec<(f64, &'a Document<I>)> {
+    pub async fn tf_idf<'a>(&'a self, term: &str) -> Result<Vec<(f64, &'a Document<I>)>, Error> {
         let mut result = vec![];
-        let idf = self.idf(term);
+        let idf = self.idf(term).await;
 
-        let empty_set = HashSet::new();
-        let relevant_docs = match self.reverse_index.get(term) {
-            Some(l) => l,
-            None => &empty_set,
+        let relevant_docs = match self.storage.get_reverse_documents(term).await {
+            Ok(docs) => docs,
+            Err(_) => Vec::new(),
         };
 
         for doc_id in relevant_docs {
-            let doc = self.documents.get(doc_id);
-            if doc.is_some() {
-                let doc = doc.expect("previous check for existance failed");
-                let doc_tf_idf = idf * doc.tf(term);
-                result.push((doc_tf_idf, doc));
-            }
+            let doc = self.storage.get_document(doc_id.get_id()).await?;
+            let doc_tf_idf = idf * doc.tf(term);
+            result.push((doc_tf_idf, doc));
         }
-        result
+        Ok(result)
     }
 
     /// Query `Document<I>`s using the embeddings generated during `Self::insert_document`.
@@ -294,16 +212,27 @@ where
     where
         T: TokenizerStrategie,
     {
+        if self.vec_db.is_none() {
+            return Err(anyhow!("no qdrant client options set"));
+        }
+
+        let QdrantOptions {
+            client,
+            collection_name,
+        } = self
+            .vec_db
+            .as_ref()
+            .expect("already checked before. This should be Some");
+
         let query_tokenizier = QueryTokenizer::new(tokenizer);
         let sentences = query_tokenizier.sentences(query);
 
         let mut embeddings = util::get_embedding(&sentences, &self.model, &self.tokenizer)?;
         let embedding = embeddings.remove(0);
 
-        let result = self
-            .vec_db
+        let result = client
             .search_points(&SearchPoints {
-                collection_name: self.collection_name.clone(),
+                collection_name: collection_name.clone(),
                 limit: 10,
                 with_payload: Some(true.into()),
                 vector: embedding,
@@ -315,9 +244,9 @@ where
         for r in result.result {
             let payload_id: I = serde_json::from_value(r.payload["id"].clone().into_json())?;
             let score = r.score as f64;
-            match self.documents.get(&payload_id) {
-                Some(doc) => similiar_entries.push((score, doc)),
-                None => (),
+            match self.storage.get_document(Arc::new(payload_id)).await {
+                Ok(doc) => similiar_entries.push((score, doc)),
+                Err(_) => (),
             };
         }
 

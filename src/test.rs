@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, path::{Path, PathBuf}};
 
 use qdrant_client::{
     prelude::QdrantClient,
@@ -8,6 +8,8 @@ use qdrant_client::{
     },
 };
 use serde::{Deserialize, Serialize};
+
+use crate::{MemoryStorage, QdrantOptions};
 
 #[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct I64(i64);
@@ -88,7 +90,10 @@ fn store_and_find() {
         }))
         .unwrap();
 
-    let mut index = Index::<I64>::new(onnx_tokenizer, model, client, collection_name);
+    let opts = QdrantOptions::new(client, collection_name);
+    let storage = MemoryStorage::new();
+
+    let mut index = Index::<I64, _, PathBuf>::new(onnx_tokenizer, model, Some(opts), storage);
     let tokenizer = SimpleTokenizer::new();
     let filter = EmptyWordFilter {};
 
@@ -112,13 +117,14 @@ fn store_and_find() {
         index.insert_document(document3).await.unwrap();
     });
 
-    let result = index.tf_idf_all("brown fox", &tokenizer, &filter);
+    let result =
+        runtime.block_on(async { index.tf_idf_all("brown fox", &tokenizer, &filter).await });
     assert!(result.len() == 2);
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
     assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
 
-    let result = index.tf_idf_all("fast", &tokenizer, &filter);
+    let result = runtime.block_on(async { index.tf_idf_all("fast", &tokenizer, &filter).await });
     assert!(result.len() == 2);
     assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
