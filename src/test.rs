@@ -73,7 +73,7 @@ fn store_and_find() {
         .unwrap();
 
     let opts = QdrantOptions::new(client, collection_name);
-    let storage = MemoryStorage::new();
+    let storage = MemoryStorage::new("index.json");
 
     let mut index = Index::<I64, _, PathBuf>::new(Some(opts), storage);
     let tokenizer = SimpleTokenizer::new();

@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
-    io::{Write, Read},
+    io::{Read, Write},
     path::PathBuf,
     sync::Arc,
 };
@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use tokio::{
     fs::OpenOptions,
     io::{AsyncReadExt, AsyncWriteExt},
-    runtime::Handle,
 };
 
 use crate::Document;
@@ -63,6 +62,7 @@ where
 {
     documents: HashMap<Arc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Arc<I>>>,
+    path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -81,14 +81,18 @@ impl<I> MemoryStorage<I>
 where
     I: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
-    pub fn new() -> Self {
+    pub fn new<O>(path: O) -> Self
+    where
+        O: Into<PathBuf>,
+    {
         let mut s = Self {
             documents: HashMap::new(),
             reverse_index: HashMap::new(),
+            path: path.into(),
         };
 
         // NOTE: this error can be ignored, because the resulting structure will be initial
-        let _ = s.load_sync("index.json");
+        let _ = s.load_sync(s.path.clone());
 
         s
     }
@@ -264,8 +268,10 @@ where
         Ok(())
     }
 
-    pub fn save_sync<O>(&self, options: O) -> Result<(), Error> 
-    where O: Into<PathBuf>{
+    pub fn save_sync<O>(&self, options: O) -> Result<(), Error>
+    where
+        O: Into<PathBuf>,
+    {
         let path: PathBuf = options.into();
 
         let mut file_options = std::fs::OpenOptions::new();
@@ -285,7 +291,7 @@ where
         file.write(&buffer)?;
 
         Ok(())
-    } 
+    }
 }
 
 impl<T> Drop for MemoryStorage<T>
@@ -293,6 +299,6 @@ where
     T: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
     fn drop(&mut self) {
-        let _ = self.save_sync("index.json");
+        let _ = self.save_sync(self.path.clone());
     }
 }
