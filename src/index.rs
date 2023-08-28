@@ -51,8 +51,8 @@ where
 {
     /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
     pub fn new(client: Option<QdrantOptions>, storage: ST) -> Self {
-        let model_bytes = include_bytes!("../model/pytorch_model.onnx");
-        let tokens_bytes = include_bytes!("../model/tokens.json");
+        let model_bytes = include_bytes!("../model/pytorch_model.onnx.large");
+        let tokens_bytes = include_bytes!("../model/tokens.json.large");
 
         let environment = ort::Environment::builder()
             .with_name("Hugging Face Embedding")
