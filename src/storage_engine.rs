@@ -1,15 +1,20 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
+    io::{Write, Read},
     path::PathBuf,
     sync::Arc,
 };
 
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use anyhow::{anyhow, Error};
 use async_trait::async_trait;
-use tokio::{fs::OpenOptions, io::{AsyncWriteExt, AsyncReadExt}};
+use tokio::{
+    fs::OpenOptions,
+    io::{AsyncReadExt, AsyncWriteExt},
+    runtime::Handle,
+};
 
 use crate::Document;
 
@@ -52,7 +57,10 @@ pub trait StorageEngine<I, O> {
     }
 }
 
-pub struct MemoryStorage<I> {
+pub struct MemoryStorage<I>
+where
+    I: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
     documents: HashMap<Arc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Arc<I>>>,
 }
@@ -69,12 +77,20 @@ struct DataIndexRead<I> {
     reverse_index: Vec<(String, Vec<I>)>,
 }
 
-impl<I> MemoryStorage<I> {
+impl<I> MemoryStorage<I>
+where
+    I: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
     pub fn new() -> Self {
-        Self {
+        let mut s = Self {
             documents: HashMap::new(),
             reverse_index: HashMap::new(),
-        }
+        };
+
+        // NOTE: this error can be ignored, because the resulting structure will be initial
+        let _ = s.load_sync("index.json");
+
+        s
     }
 }
 
@@ -203,5 +219,80 @@ where
         self.documents = documents;
         self.reverse_index = reverse_index;
         Ok(())
+    }
+}
+
+impl<T> MemoryStorage<T>
+where
+    T: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    fn load_sync<O>(&mut self, options: O) -> Result<(), Error>
+    where
+        O: Into<PathBuf>,
+    {
+        let path = options.into();
+
+        let mut file_options = std::fs::OpenOptions::new();
+        let mut file = file_options
+            .read(true)
+            .write(false)
+            .truncate(false)
+            .create(false)
+            .open(path)?;
+
+        let mut buffer = vec![];
+        file.read_to_end(&mut buffer)?;
+        let data: DataIndexRead<T> = serde_json::from_slice(&buffer)?;
+
+        let mut documents = HashMap::new();
+        data.documents.into_iter().for_each(|(k, v)| {
+            documents.insert(Arc::new(k), v);
+        });
+
+        let mut reverse_index = HashMap::new();
+        data.reverse_index.into_iter().for_each(|(k, v)| {
+            let mut set = HashSet::new();
+            v.into_iter().for_each(|v| {
+                set.insert(Arc::new(v));
+            });
+            reverse_index.insert(k, set);
+        });
+
+        self.documents = documents;
+        self.reverse_index = reverse_index;
+
+        Ok(())
+    }
+
+    pub fn save_sync<O>(&self, options: O) -> Result<(), Error> 
+    where O: Into<PathBuf>{
+        let path: PathBuf = options.into();
+
+        let mut file_options = std::fs::OpenOptions::new();
+        file_options.create(true).write(true).truncate(true);
+        let mut file = file_options.open(path)?;
+
+        let data = DataIndexStore {
+            documents: self.documents.iter().map(|k| k).collect(),
+            reverse_index: self
+                .reverse_index
+                .iter()
+                .map(|(k, v)| (k, v.clone().into_iter().map(|v| v).collect()))
+                .collect(),
+        };
+
+        let buffer = serde_json::to_vec(&data)?;
+        file.write(&buffer)?;
+
+        Ok(())
+    } 
+}
+
+impl<T> Drop for MemoryStorage<T>
+where
+    T: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+{
+    fn drop(&mut self) {
+        let _ = self.save_sync("index.json");
     }
 }
