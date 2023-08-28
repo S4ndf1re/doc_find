@@ -11,7 +11,6 @@ use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use crate::{util, Document, QueryTokenizer, StorageEngine, TokenizerStrategie, WordFilter};
-use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
 use std::borrow::Cow;
@@ -38,7 +37,7 @@ impl QdrantOptions {
 
 pub struct Index<I, ST, O> {
     tokenizer: tokenizers::Tokenizer,
-    model: ort::Session,
+    model: ort::InMemorySession<'static>,
     vec_db: Option<QdrantOptions>,
     storage: ST,
     _phantom_i: std::marker::PhantomData<I>,
@@ -51,14 +50,30 @@ where
     ST: StorageEngine<I, O>,
 {
     /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
-    pub fn new(
-        embed_tokenizer: tokenizers::Tokenizer,
-        model: ort::Session,
-        client: Option<QdrantOptions>,
-        storage: ST,
-    ) -> Self {
+    pub fn new(client: Option<QdrantOptions>, storage: ST) -> Self {
+        let model_bytes = include_bytes!("../model/pytorch_model.onnx");
+        let tokens_bytes = include_bytes!("../model/tokens.json");
+
+        let environment = ort::Environment::builder()
+            .with_name("Hugging Face Embedding")
+            .with_execution_providers([ort::ExecutionProvider::CUDA(Default::default())])
+            .build()
+            .unwrap()
+            .into_arc();
+
+        let model = ort::SessionBuilder::new(&environment)
+            .unwrap()
+            .with_optimization_level(ort::GraphOptimizationLevel::Level1)
+            .unwrap()
+            .with_intra_threads(1)
+            .unwrap()
+            .with_model_from_memory(model_bytes)
+            .unwrap();
+
+        let onnx_tokenizer = tokenizers::Tokenizer::from_bytes(tokens_bytes).unwrap();
+
         Index {
-            tokenizer: embed_tokenizer,
+            tokenizer: onnx_tokenizer,
             vec_db: client,
             model,
             storage,

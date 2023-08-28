@@ -1,4 +1,4 @@
-use std::{fmt::Display, path::{Path, PathBuf}};
+use std::{fmt::Display, path::PathBuf};
 
 use qdrant_client::{
     prelude::QdrantClient,
@@ -49,24 +49,6 @@ impl Display for I64 {
 fn store_and_find() {
     use crate::{Document, EmptyWordFilter, Index, SimpleTokenizer};
 
-    let environment = ort::Environment::builder()
-        .with_name("Hugging Face Embedding")
-        .with_execution_providers([ort::ExecutionProvider::CUDA(Default::default())])
-        .build()
-        .unwrap()
-        .into_arc();
-
-    let model = ort::SessionBuilder::new(&environment)
-        .unwrap()
-        .with_optimization_level(ort::GraphOptimizationLevel::Level1)
-        .unwrap()
-        .with_intra_threads(1)
-        .unwrap()
-        .with_model_from_file("model/pytorch_model.onnx")
-        .unwrap();
-
-    let onnx_tokenizer = tokenizers::Tokenizer::from_file("model/tokens.json").unwrap();
-
     let client = QdrantClient::from_url("http://localhost:6334")
         .build()
         .unwrap();
@@ -93,7 +75,7 @@ fn store_and_find() {
     let opts = QdrantOptions::new(client, collection_name);
     let storage = MemoryStorage::new();
 
-    let mut index = Index::<I64, _, PathBuf>::new(onnx_tokenizer, model, Some(opts), storage);
+    let mut index = Index::<I64, _, PathBuf>::new(Some(opts), storage);
     let tokenizer = SimpleTokenizer::new();
     let filter = EmptyWordFilter {};
 
