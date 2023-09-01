@@ -1,3 +1,5 @@
 /target
 /Cargo.lock
 index.json
+model.onnx
+

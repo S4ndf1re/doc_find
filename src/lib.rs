@@ -1,3 +1,5 @@
+#![feature(concat_bytes)]
+
 pub mod storage_engine;
 pub use storage_engine::*;
 
@@ -15,7 +17,6 @@ pub use document::*;
 
 pub mod index;
 pub use index::*;
-
 
 #[cfg(test)]
 pub mod test;
