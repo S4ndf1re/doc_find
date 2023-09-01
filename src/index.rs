@@ -54,6 +54,8 @@ where
         let model_bytes = include_bytes!("../model/pytorch_model.onnx.large");
         let tokens_bytes = include_bytes!("../model/tokens.json.large");
 
+        dbg!(model_bytes.len());
+
         let environment = ort::Environment::builder()
             .with_name("Hugging Face Embedding")
             .with_execution_providers([ort::ExecutionProvider::CUDA(Default::default())])
