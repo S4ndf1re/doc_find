@@ -9,7 +9,7 @@ use qdrant_client::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MemoryStorage, QdrantOptions};
+use crate::{MemoryStorage, QdrantOptions, QueryOption, OptionType};
 
 #[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct I64(i64);
@@ -99,14 +99,22 @@ fn store_and_find() {
         index.insert_document(document3).await.unwrap();
     });
 
+    let options = QueryOption::new().add(OptionType::TfIdf).build();
+
     let result =
-        runtime.block_on(async { index.tf_idf_all("brown fox", &tokenizer, &filter).await });
+        runtime.block_on(async { index.query("brown fox", &tokenizer, &filter, Some(options.clone())).await });
+
+    let result = result.unwrap();
+    let result = result.collect();
     assert!(result.len() == 2);
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
     assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
 
-    let result = runtime.block_on(async { index.tf_idf_all("fast", &tokenizer, &filter).await });
+    let result = runtime.block_on(async { index.query("fast", &tokenizer, &filter, Some(options.clone())).await });
+
+    let result = result.unwrap();
+    let result = result.collect();
     assert!(result.len() == 2);
     assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
