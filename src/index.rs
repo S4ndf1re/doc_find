@@ -36,8 +36,8 @@ impl QdrantOptions {
 }
 
 pub struct Index<I, ST, O> {
-    tokenizer: Option<tokenizers::Tokenizer>,
-    model: Option<ort::InMemorySession<'static>>,
+    tokenizer: Option<Arc<tokenizers::Tokenizer>>,
+    model: Option<Arc<ort::InMemorySession<'static>>>,
     vec_db: Option<QdrantOptions>,
     storage: ST,
     _phantom_i: std::marker::PhantomData<I>,
@@ -46,7 +46,16 @@ pub struct Index<I, ST, O> {
 
 impl<I, ST, O> Index<I, ST, O>
 where
-    I: Hash + Eq + Clone + Serialize + DeserializeOwned + Into<MatchValue> + Display,
+    I: Hash
+        + Eq
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Into<MatchValue>
+        + Display
+        + Send
+        + Sync
+        + 'static,
     ST: StorageEngine<I, O>,
 {
     /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
@@ -55,7 +64,7 @@ where
         let mut model = None;
         if client.is_some() {
             let model_bytes = include_bytes!("../model/model.onnx");
-            let tokens_bytes = include_bytes!("../model/tokens.json");
+            let tokens_bytes = include_bytes!("../model/tokenizer.json");
 
             let environment = ort::Environment::builder()
                 .with_name("Hugging Face Embedding")
@@ -64,18 +73,20 @@ where
                 .unwrap()
                 .into_arc();
 
-            model = Some(
+            model = Some(Arc::new(
                 ort::SessionBuilder::new(&environment)
                     .unwrap()
-                    .with_optimization_level(ort::GraphOptimizationLevel::Level1)
+                    .with_optimization_level(ort::GraphOptimizationLevel::Level2)
                     .unwrap()
                     .with_intra_threads(1)
                     .unwrap()
                     .with_model_from_memory(model_bytes)
                     .unwrap(),
-            );
+            ));
 
-            onnx_tokenizer = Some(tokenizers::Tokenizer::from_bytes(tokens_bytes).unwrap());
+            onnx_tokenizer = Some(Arc::new(
+                tokenizers::Tokenizer::from_bytes(tokens_bytes).unwrap(),
+            ));
         }
 
         Index {
@@ -90,7 +101,7 @@ where
 
     /// Insert a single `Document<I>` into the `Index<I>` using a custom Tokenizer.
     /// The Tokenizer should be the same as used for the `Document<I>`s creation.
-    pub async fn insert_document(&mut self, doc: Document<I>) -> Result<(), Error> {
+    pub async fn insert_document(&mut self, mut doc: Document<I>) -> Result<(), Error> {
         let id = doc.get_id();
 
         if self.vec_db.is_some() {
@@ -102,13 +113,22 @@ where
                 .as_ref()
                 .expect("already checked before. This should be Some");
 
-            let model = self.model.as_ref().expect("model should be Some");
-            let onnx_tokenizer = self
-                .tokenizer
-                .as_ref()
-                .expect("onnx_tokenizer should be Some");
+            let model = Arc::clone(self.model.as_ref().expect("model should be some"));
+            let onnx_tokenizer = Arc::clone(
+                self.tokenizer
+                    .as_ref()
+                    .expect("onnx tokenizer should be some"),
+            );
 
-            let embeddings = doc.get_embedding(model, onnx_tokenizer)?;
+            let doc_arc = Arc::new(doc);
+            let doc_arc2 = Arc::clone(&doc_arc);
+
+            let embeddings = tokio::task::spawn_blocking(move || {
+                doc_arc2.as_ref().get_embedding(&model, &onnx_tokenizer)
+            })
+            .await??;
+
+            doc = Arc::into_inner(doc_arc).expect("only one arc does exist now");
 
             let payload: Payload = json!( {
                 "id": *id

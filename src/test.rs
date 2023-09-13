@@ -9,7 +9,7 @@ use qdrant_client::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MemoryStorage, QdrantOptions, QueryOption, OptionType};
+use crate::{MemoryStorage, QdrantOptions, QueryOption, OptionType, EMBEDDING_DIM};
 
 #[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct I64(i64);
@@ -49,6 +49,8 @@ impl Display for I64 {
 fn store_and_find() {
     use crate::{Document, EmptyWordFilter, Index, SimpleTokenizer};
 
+    let timer = std::time::Instant::now();
+
     let client = QdrantClient::from_url("http://localhost:6334")
         .build()
         .unwrap();
@@ -63,7 +65,7 @@ fn store_and_find() {
             collection_name: collection_name.clone(),
             vectors_config: Some(VectorsConfig {
                 config: Some(Config::Params(VectorParams {
-                    size: 768,
+                    size: EMBEDDING_DIM,
                     distance: Distance::Cosine.into(),
                     ..Default::default()
                 })),
@@ -79,6 +81,9 @@ fn store_and_find() {
     let tokenizer = SimpleTokenizer::new();
     let filter = EmptyWordFilter {};
 
+    println!("Initialization took {} ms", timer.elapsed().as_millis());
+
+    let timer = std::time::Instant::now();
     let document1 = Document::new(
         I64(1),
         "a quick brown fox lazily shakes a banana tree".to_string(),
@@ -99,7 +104,11 @@ fn store_and_find() {
         index.insert_document(document3).await.unwrap();
     });
 
+    println!("Insertion took {} ms", timer.elapsed().as_millis());
+
     let options = QueryOption::new().add(OptionType::TfIdf).build();
+
+    let timer = std::time::Instant::now();
 
     let result =
         runtime.block_on(async { index.query("brown fox", &tokenizer, &filter, Some(options.clone())).await });
@@ -119,4 +128,6 @@ fn store_and_find() {
     assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
     assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
+
+    println!("Query took {} ms", timer.elapsed().as_millis());
 }

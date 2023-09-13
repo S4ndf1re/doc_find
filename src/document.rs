@@ -28,7 +28,9 @@ pub struct Document<I> {
     pub data: String,
 }
 
-impl<I> Document<I> {
+impl<I> Document<I> 
+where I: Send
+{
     pub fn new<D, T, F>(id: I, data: D, filter: &F, tokenizer: &T) -> Self
     where
         D: IntoDocumentString,
