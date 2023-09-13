@@ -1,30 +1,11 @@
-use std::{fmt::Display, path::PathBuf};
+use std::path::PathBuf;
 
 use qdrant_client::{
     prelude::QdrantClient,
-    qdrant::{
-        r#match::MatchValue, vectors_config::Config, CreateCollection, Distance, VectorParams,
-        VectorsConfig,
-    },
+    qdrant::{vectors_config::Config, CreateCollection, Distance, VectorParams, VectorsConfig},
 };
-use serde::{Deserialize, Serialize};
 
-use crate::{MemoryStorage, QdrantOptions, QueryOption, OptionType, EMBEDDING_DIM};
-
-#[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct I64(i64);
-
-impl Into<MatchValue> for I64 {
-    fn into(self) -> MatchValue {
-        MatchValue::Integer(self.0)
-    }
-}
-
-impl Display for I64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
+use crate::{MemoryStorage, OptionType, QdrantOptions, QueryOption, EMBEDDING_DIM};
 
 #[test]
 fn store_and_find() {
@@ -58,7 +39,7 @@ fn store_and_find() {
     let opts = QdrantOptions::new(client, collection_name);
     let storage = MemoryStorage::new("index.json");
 
-    let mut index = Index::<I64, _, PathBuf>::new(Some(opts), storage);
+    let mut index = Index::<i64, _, PathBuf>::new(Some(opts), storage);
     let tokenizer = SimpleTokenizer::new();
     let filter = EmptyWordFilter {};
 
@@ -66,18 +47,18 @@ fn store_and_find() {
 
     let timer = std::time::Instant::now();
     let document1 = Document::new(
-        I64(1),
+        1,
         "a quick brown fox lazily shakes a banana tree".to_string(),
         &filter,
         &tokenizer,
     );
     let document2 = Document::new(
-        I64(2),
+        2,
         "a quick brown fox pulls a gun fast".to_string(),
         &filter,
         &tokenizer,
     );
-    let document3 = Document::new(I64(3), "test me fast".to_string(), &filter, &tokenizer);
+    let document3 = Document::new(3, "test me fast".to_string(), &filter, &tokenizer);
 
     runtime.block_on(async {
         index.insert_document(document1).await.unwrap();
@@ -91,24 +72,31 @@ fn store_and_find() {
 
     let timer = std::time::Instant::now();
 
-    let result =
-        runtime.block_on(async { index.query("brown fox", &tokenizer, &filter, Some(options.clone())).await });
+    let result = runtime.block_on(async {
+        index
+            .query("brown fox", &tokenizer, &filter, Some(options.clone()))
+            .await
+    });
 
     let result = result.unwrap();
     let result = result.collect();
     assert!(result.len() == 2);
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
-    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &1));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &3));
 
-    let result = runtime.block_on(async { index.query("fast", &tokenizer, &filter, Some(options.clone())).await });
+    let result = runtime.block_on(async {
+        index
+            .query("fast", &tokenizer, &filter, Some(options.clone()))
+            .await
+    });
 
     let result = result.unwrap();
     let result = result.collect();
     assert!(result.len() == 2);
-    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &I64(1)));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(2)));
-    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &I64(3)));
+    assert!(!result.iter().any(|(_, e)| e.id.as_ref() == &1));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &2));
+    assert!(result.iter().any(|(_, e)| e.id.as_ref() == &3));
 
     println!("Query took {} ms", timer.elapsed().as_millis());
 }
