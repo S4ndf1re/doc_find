@@ -1,25 +1,21 @@
 use anyhow::{anyhow, Error};
 use qdrant_client::prelude::{Payload, QdrantClient};
-use qdrant_client::qdrant::condition::ConditionOneOf;
-use qdrant_client::qdrant::points_selector::PointsSelectorOneOf;
 use qdrant_client::qdrant::r#match::MatchValue;
-use qdrant_client::qdrant::{
-    Condition, FieldCondition, Filter, Match, PointStruct, PointsSelector, SearchPoints,
-};
+use qdrant_client::qdrant::{Condition, Filter, PointStruct, SearchPoints};
 use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-use crate::{util, Document, QueryTokenizer, StorageEngine, TokenizerStrategie, WordFilter};
+use crate::{
+    query_options, util, Document, QueryOption, QueryResult, QueryTokenizer, ResultType,
+    StorageEngine, TokenizerStrategie, WordFilter,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::borrow::Cow;
 use std::fmt::Display;
 use std::sync::Arc;
 use std::{collections::HashMap, hash::Hash};
-
-const _DOCUMENTS_PREFIX: &str = "~DOCS:";
-const _REVERSE_INDEX_PREFIX: &str = "~REV_IDX:";
 
 pub struct QdrantOptions {
     client: QdrantClient,
@@ -36,8 +32,8 @@ impl QdrantOptions {
 }
 
 pub struct Index<I, ST, O> {
-    tokenizer: tokenizers::Tokenizer,
-    model: ort::InMemorySession<'static>,
+    tokenizer: Option<Arc<tokenizers::Tokenizer>>,
+    model: Option<Arc<ort::InMemorySession<'static>>>,
     vec_db: Option<QdrantOptions>,
     storage: ST,
     _phantom_i: std::marker::PhantomData<I>,
@@ -46,32 +42,48 @@ pub struct Index<I, ST, O> {
 
 impl<I, ST, O> Index<I, ST, O>
 where
-    I: Hash + Eq + Clone + Serialize + DeserializeOwned + Into<MatchValue> + Display,
+    I: Hash
+        + Eq
+        + Clone
+        + Serialize
+        + DeserializeOwned
+        + Into<MatchValue>
+        + Display
+        + Send
+        + Sync
+        + 'static,
     ST: StorageEngine<I, O>,
 {
     /// Create a new `Index<I>` that can store multiple `Documents<I>` and query over its data.
     pub fn new(client: Option<QdrantOptions>, storage: ST) -> Self {
-        let model_bytes = include_bytes!("../model/model.onnx");
+        let mut onnx_tokenizer = None;
+        let mut model = None;
+        if client.is_some() {
+            let model_bytes = include_bytes!("../model/model.onnx");
+            let tokens_bytes = include_bytes!("../model/tokenizer.json");
 
-        let tokens_bytes = include_bytes!("../model/tokens.json");
+            let environment = ort::Environment::builder()
+                .with_name("Hugging Face Embedding")
+                .with_execution_providers([ort::ExecutionProvider::CUDA(Default::default())])
+                .build()
+                .unwrap()
+                .into_arc();
 
-        let environment = ort::Environment::builder()
-            .with_name("Hugging Face Embedding")
-            .with_execution_providers([ort::ExecutionProvider::CUDA(Default::default())])
-            .build()
-            .unwrap()
-            .into_arc();
+            model = Some(Arc::new(
+                ort::SessionBuilder::new(&environment)
+                    .unwrap()
+                    .with_optimization_level(ort::GraphOptimizationLevel::Level2)
+                    .unwrap()
+                    .with_intra_threads(1)
+                    .unwrap()
+                    .with_model_from_memory(model_bytes)
+                    .unwrap(),
+            ));
 
-        let model = ort::SessionBuilder::new(&environment)
-            .unwrap()
-            .with_optimization_level(ort::GraphOptimizationLevel::Level1)
-            .unwrap()
-            .with_intra_threads(1)
-            .unwrap()
-            .with_model_from_memory(model_bytes)
-            .unwrap();
-
-        let onnx_tokenizer = tokenizers::Tokenizer::from_bytes(tokens_bytes).unwrap();
+            onnx_tokenizer = Some(Arc::new(
+                tokenizers::Tokenizer::from_bytes(tokens_bytes).unwrap(),
+            ));
+        }
 
         Index {
             tokenizer: onnx_tokenizer,
@@ -85,7 +97,7 @@ where
 
     /// Insert a single `Document<I>` into the `Index<I>` using a custom Tokenizer.
     /// The Tokenizer should be the same as used for the `Document<I>`s creation.
-    pub async fn insert_document(&mut self, doc: Document<I>) -> Result<(), Error> {
+    pub async fn insert_document(&mut self, mut doc: Document<I>) -> Result<(), Error> {
         let id = doc.get_id();
 
         if self.vec_db.is_some() {
@@ -97,7 +109,22 @@ where
                 .as_ref()
                 .expect("already checked before. This should be Some");
 
-            let embeddings = doc.get_embedding(&self.model, &self.tokenizer)?;
+            let model = Arc::clone(self.model.as_ref().expect("model should be some"));
+            let onnx_tokenizer = Arc::clone(
+                self.tokenizer
+                    .as_ref()
+                    .expect("onnx tokenizer should be some"),
+            );
+
+            let doc_arc = Arc::new(doc);
+            let doc_arc2 = Arc::clone(&doc_arc);
+
+            let embeddings = tokio::task::spawn_blocking(move || {
+                doc_arc2.as_ref().get_embedding(&model, &onnx_tokenizer)
+            })
+            .await??;
+
+            doc = Arc::into_inner(doc_arc).expect("only one arc does exist now");
 
             let payload: Payload = json!( {
                 "id": *id
@@ -129,19 +156,9 @@ where
                 .as_ref()
                 .expect("already checked before. This should be Some");
 
-            let point_selector = PointsSelector {
-                points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter::must(vec![
-                    Condition {
-                        condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
-                            key: "id".to_owned(),
-                            r#match: Some(Match {
-                                match_value: Some(id.as_ref().clone().into()),
-                            }),
-                            ..Default::default()
-                        })),
-                    },
-                ]))),
-            };
+            let point_selector =
+                Filter::must(vec![Condition::matches("id", id.as_ref().clone().into())]).into();
+
             client
                 .delete_points(collection_name, &point_selector, None)
                 .await?;
@@ -165,7 +182,7 @@ where
     /// calculate tf_idf for all documents.
     /// this can take a query string, that can contain multiple tokens (using the same tokenizer as
     /// the documents
-    pub async fn tf_idf_all<'a, T, F>(
+    async fn tf_idf_all<'a, T, F>(
         &'a self,
         query: &str,
         tokenizer: &T,
@@ -199,7 +216,7 @@ where
     }
 
     /// Calculate tf_idf of all documents that contain the term `term`
-    pub async fn tf_idf<'a>(&'a self, term: &str) -> Result<Vec<(f64, &'a Document<I>)>, Error> {
+    async fn tf_idf<'a>(&'a self, term: &str) -> Result<Vec<(f64, &'a Document<I>)>, Error> {
         let mut result = vec![];
         let idf = self.idf(term).await;
 
@@ -220,7 +237,7 @@ where
     /// This will not run `tf_idf` or any other serach.
     /// At the end, a list of all found `Document<I>`s will get returned, tupled with the vector
     /// distance to the query.
-    pub async fn query_embedding<'a, T>(
+    async fn query_embedding<'a, T>(
         &'a self,
         query: &str,
         tokenizer: &T,
@@ -240,10 +257,16 @@ where
             .as_ref()
             .expect("already checked before. This should be Some");
 
+        let model = self.model.as_ref().expect("model should be Some");
+        let onnx_tokenizer = self
+            .tokenizer
+            .as_ref()
+            .expect("onnx_tokenizer should be Some");
+
         let query_tokenizier = QueryTokenizer::new(tokenizer);
         let sentences = query_tokenizier.sentences(query);
 
-        let mut embeddings = util::get_embedding(&sentences, &self.model, &self.tokenizer)?;
+        let mut embeddings = util::get_embedding(&sentences, model, onnx_tokenizer)?;
         let embedding = embeddings.remove(0);
 
         let result = client
@@ -267,5 +290,39 @@ where
         }
 
         Ok(similiar_entries)
+    }
+
+    pub async fn query<'a, T, F>(
+        &'a self,
+        query: &str,
+        tokenizer: &T,
+        filter: &F,
+        mut query_option: Option<QueryOption>,
+    ) -> Result<QueryResult<'a, I>, Error>
+    where
+        T: TokenizerStrategie,
+        F: WordFilter,
+    {
+        let options = query_option.take().unwrap_or_default();
+
+        let mut result = QueryResult::new();
+
+        for opt in options.get_options() {
+            match opt {
+                query_options::OptionType::TfIdf => {
+                    let docs = self.tf_idf_all(query, tokenizer, filter).await;
+                    result.add_vec(ResultType::TfIdf, &docs);
+                }
+                query_options::OptionType::Vector => {
+                    let docs = self.query_embedding(query, tokenizer).await?;
+                    result.add_vec(ResultType::Vector, &docs);
+                }
+                query_options::OptionType::Bm25 => {
+                    todo!("bm25 not implemented yet")
+                }
+            }
+        }
+
+        Ok(result)
     }
 }

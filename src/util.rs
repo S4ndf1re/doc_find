@@ -2,6 +2,8 @@ use anyhow::{anyhow, Error};
 use ndarray::{Array, Axis, CowArray};
 use ort::{tensor::OrtOwnedTensor, Value};
 
+pub const EMBEDDING_DIM: u64 = 384;
+
 /// Generate sentence embeddings for all `sentences`.
 /// Sentences are generated using a sentece embedding model and the onnx runtime.
 /// The `tokenizer` is a huggingface implementation of their tokenizer specification.
@@ -11,6 +13,7 @@ pub fn get_embedding(
     model: &ort::Session,
     tokenizer: &tokenizers::Tokenizer,
 ) -> Result<Vec<Vec<f32>>, Error> {
+    let timer = std::time::Instant::now();
     let mut result = vec![];
     for sentence in sentences {
         let tokens = tokenizer
@@ -45,5 +48,6 @@ pub fn get_embedding(
         result.push(embedding);
     }
 
+    println!("Embedding took: {} ms", timer.elapsed().as_millis());
     Ok(result)
 }

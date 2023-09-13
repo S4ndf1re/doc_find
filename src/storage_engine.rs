@@ -58,7 +58,7 @@ pub trait StorageEngine<I, O> {
 
 pub struct MemoryStorage<I>
 where
-    I: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    I: Serialize + DeserializeOwned + Eq + Hash,
 {
     documents: HashMap<Arc<I>, Document<I>>,
     reverse_index: HashMap<String, HashSet<Arc<I>>>,
@@ -79,7 +79,7 @@ struct DataIndexRead<I> {
 
 impl<I> MemoryStorage<I>
 where
-    I: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    I: Serialize + DeserializeOwned + Eq + Hash,
 {
     pub fn new<O>(path: O) -> Self
     where
@@ -228,7 +228,7 @@ where
 
 impl<T> MemoryStorage<T>
 where
-    T: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    T: DeserializeOwned + Serialize  + Eq + Hash,
 {
     fn load_sync<O>(&mut self, options: O) -> Result<(), Error>
     where
@@ -296,7 +296,7 @@ where
 
 impl<T> Drop for MemoryStorage<T>
 where
-    T: Hash + Eq + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
+    T: Serialize + DeserializeOwned + Eq + Hash,
 {
     fn drop(&mut self) {
         let _ = self.save_sync(self.path.clone());
