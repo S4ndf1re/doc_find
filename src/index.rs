@@ -1,11 +1,7 @@
 use anyhow::{anyhow, Error};
 use qdrant_client::prelude::{Payload, QdrantClient};
-use qdrant_client::qdrant::condition::ConditionOneOf;
-use qdrant_client::qdrant::points_selector::PointsSelectorOneOf;
 use qdrant_client::qdrant::r#match::MatchValue;
-use qdrant_client::qdrant::{
-    Condition, FieldCondition, Filter, Match, PointStruct, PointsSelector, SearchPoints,
-};
+use qdrant_client::qdrant::{Condition, Filter, PointStruct, SearchPoints};
 use qdrant_client::serde::PayloadConversionError;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
@@ -160,19 +156,9 @@ where
                 .as_ref()
                 .expect("already checked before. This should be Some");
 
-            let point_selector = PointsSelector {
-                points_selector_one_of: Some(PointsSelectorOneOf::Filter(Filter::must(vec![
-                    Condition {
-                        condition_one_of: Some(ConditionOneOf::Field(FieldCondition {
-                            key: "id".to_owned(),
-                            r#match: Some(Match {
-                                match_value: Some(id.as_ref().clone().into()),
-                            }),
-                            ..Default::default()
-                        })),
-                    },
-                ]))),
-            };
+            let point_selector =
+                Filter::must(vec![Condition::matches("id", id.as_ref().clone().into())]).into();
+
             client
                 .delete_points(collection_name, &point_selector, None)
                 .await?;
