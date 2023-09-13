@@ -1,5 +1,4 @@
 use anyhow::Error;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::util;
@@ -117,26 +116,3 @@ where I: Send
     }
 }
 
-impl<I> Into<tikv_client::Value> for Document<I>
-where
-    I: Serialize,
-{
-    fn into(self) -> tikv_client::Value {
-        match serde_json::to_vec(&self) {
-            Ok(buffer) => buffer,
-            Err(_) => vec![],
-        }
-    }
-}
-
-impl<I> From<tikv_client::Value> for Document<I>
-where
-    I: DeserializeOwned + Default,
-{
-    fn from(value: tikv_client::Value) -> Self {
-        match serde_json::from_slice(&value) {
-            Ok(val) => val,
-            Err(_) => Default::default(),
-        }
-    }
-}

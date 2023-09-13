@@ -14,25 +14,6 @@ use crate::{MemoryStorage, QdrantOptions, QueryOption, OptionType, EMBEDDING_DIM
 #[derive(Hash, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct I64(i64);
 
-impl Into<tikv_client::Key> for I64 {
-    fn into(self) -> tikv_client::Key {
-        serde_json::to_vec(&self.0).unwrap().into()
-    }
-}
-
-impl From<tikv_client::Key> for I64 {
-    fn from(value: tikv_client::Key) -> Self {
-        let v: Vec<u8> = value.into();
-        Self(serde_json::from_slice(&v).unwrap())
-    }
-}
-
-impl Into<tikv_client::Value> for I64 {
-    fn into(self) -> tikv_client::Value {
-        serde_json::to_vec(&self.0).unwrap().into()
-    }
-}
-
 impl Into<MatchValue> for I64 {
     fn into(self) -> MatchValue {
         MatchValue::Integer(self.0)
